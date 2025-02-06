@@ -1,0 +1,38 @@
+service: graphql-api
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: ap-south-1 
+  # environment:
+  #   DB_HOST: database-1.cp6u0i84ybal.us-east-1.rds.amazonaws.com
+  #   DB_USER: admin
+  #   DB_PASSWORD: Tejas123 
+  #   DB_NAME: userapp
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "rds:*"
+      Resource: "*"
+
+functions:
+  graphql:
+    handler: index.graphqlHandler
+    events:
+      - http:
+          path: graphql
+          method: any
+          cors: true
+
+plugins:
+  - serverless-dotenv-plugin
+
+custom:
+  serverless-offline:
+    httpPort: 4000
+
+package:
+  exclude:
+    - .gitignore
+    - .git/**
+
