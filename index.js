@@ -1,109 +1,111 @@
-import express   from 'express';
-import http  from 'http';
-import  { graphqlHTTP } from 'express-graphql';
-import { GraphQLScalarType, Kind, buildSchema } from 'graphql';
-import mysql from 'mysql2';
-import cors from 'cors';
+import { ApolloServer } from 'apollo-server-lambda';
+import gql from 'graphql-tag';
+import { GraphQLScalarType, Kind } from 'graphql';
+import mysql from 'mysql2/promise';
+import dotenv from 'dotenv';
 
-let con = {};
-const app = express();
-app.use(express.json({ limit: '16mb' }))
-app.use(cors());
 
-  const resolverDate = {
+
+dotenv.config();
+
+const dbConfig = {
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+};
+
+const resolverDate = {
   Date: new GraphQLScalarType({
     name: 'Date',
     description: 'Date custom scalar type',
     parseValue(value) {
-      return value; // value from the client
+      return value;
     },
     serialize(value) {
-      return value; // value sent to the client
+      return value;
     },
     parseLiteral(ast) {
       if (ast.kind === Kind.INT) {
-        return ast.value // ast value is always in string format
+        return ast.value;
       }
       return null;
     },
   }),
 };
 
-const schema = buildSchema(`
+const typeDefs = gql`
   scalar Date
   type User {
     id: Int
     name: String
     email: String
     job_title: String
-    joining_date:Date
-    content:String
+    joining_date: Date
+    content: String
   }
   type Query {
-    getUsers: [User],
-    getUser(id: Int):User
-    }
+    getUsers: [User]
+    getUser(id: Int): User
+  }
   type Mutation {
-    updateUser(id: Int, name: String, email: String, job_title: String, 
-      joining_date:Date, content:String): Boolean,
-    createUser(name: String, email: String, job_title: String, joining_date:Date, 
-      content:String): Boolean,
+    updateUser(id: Int, name: String, email: String, job_title: String, joining_date: Date, content: String): Boolean
+    createUser(name: String, email: String, job_title: String, joining_date: Date, content: String): Boolean
     deleteUser(id: Int): Boolean
   }
-`);
+`;
 
-con = mysql.createConnection({
-  host     : '127.0.0.1',
-  user     : 'root',
-  password : 'root',
-  database : 'userapp'
-});
-
-con.connect((err) => {
-  if (err) {
-    console.log('Error connecting to database:'+err);
-    return;
+const queryDB = async (sql, args = []) => {
+  const connection = await mysql.createConnection(dbConfig);
+  
+  // Ensure 'args' is always an array
+  if (!Array.isArray(args)) {
+    args = [args];
   }
-  console.log('Connected to database');
-});
 
-app.use((req, res, next) => {
-  req.mysqlDb = con;
-  next();
-});
-
-const queryDB = (req, sql, args) => new Promise((resolve, reject) => {
-  req.mysqlDb.query(sql, args, (err, rows) => {
-      if (err) return reject(err);
-      rows.changedRows || rows.affectedRows || rows.insertId ? resolve(true) : resolve(rows);
-  });
-});  
-
-const root = {
-  getUsers: (args, req) => queryDB(req, "select * from users").then(data => data),
-  getUser: (args, req) => queryDB(req, "select * from users where id = ?", [args.id]).then(data => data[0]),
-  updateUser: (args, req) => queryDB(req, "update users SET ? where id = ?", [args, args.id]).then(data => data),
-  createUser: (args, req) => queryDB(req, "insert into users SET ?", args).then(data => data),
-  deleteUser: (args, req) => queryDB(req, "delete from users where id = ?", [args.id]).then(data => data),
+  const [rows] = await connection.execute(sql, args);
+  await connection.end();
+  return rows;
 };
 
-let users = [
-  { id: 1, name: 'John Doe', age: 30 },
-  { id: 2, name: 'Jane Smith', age: 25 }
-];
 
-// GET endpoint to fetch all users
-app.get('/api/users', (req, res) => {
-  res.json(users);
-});
+const resolvers = {
+  ...resolverDate,
+  Query: {
+    getUsers: async () => await queryDB('SELECT * FROM users'),
+    getUser: async (_, { id }) => {
+      const result = await queryDB('SELECT * FROM users WHERE id = ?', [id]);
+      return result[0];
+    },
+  },
+  Mutation: {
+    updateUser: async (_, args) => {
+      const { id, ...updates } = args;
+      
+      // Convert updates object into a SQL SET string (e.g., "name = ?, email = ?")
+      const updateFields = Object.keys(updates).map(field => `${field} = ?`).join(', ');
+      const values = Object.values(updates);
+    
+      const result = await queryDB(`UPDATE users SET ${updateFields} WHERE id = ?`, [...values, id]);
+      return result.affectedRows > 0;
+    },
+    createUser: async (_, args) => {
+      const columns = Object.keys(args).join(', ');
+      const placeholders = Object.keys(args).map(() => '?').join(', ');
+      const values = Object.values(args);
+    
+      const sql = `INSERT INTO users (${columns}) VALUES (${placeholders})`;
+      
+      const result = await queryDB(sql, values);
+      return result.affectedRows > 0;
+    },
+    deleteUser: async (_, { id }) => {
+      const result = await queryDB('DELETE FROM users WHERE id = ?', [id]);
+      return result.affectedRows > 0;
+    },
+  },
+};
 
-app.use('/graphql', graphqlHTTP({
-    schema: schema,
-    rootValue: root,
-    graphiql: true,
-}));
+const server = new ApolloServer({ typeDefs, resolvers });
 
-
-const httpServer = http.createServer(app);
-httpServer.listen('4000');
-console.log('Running a GraphQL API server 🚀 at localhost:4000/graphql'); 
+export const graphqlHandler = server.createHandler();
